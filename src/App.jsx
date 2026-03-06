@@ -201,8 +201,84 @@ export default function GolfDashboard() {
     };
   }), []);
 
+  // Handicap calculation: avg of previous 2 years' scores (per 9 holes)
+  const handicapData = useMemo(() => {
+    const result = {};
+    YEARS.forEach(y => {
+      const lookbackYears = y === 2020 ? [] : y === 2021 ? [2020] : [y - 2, y - 1];
+      if (lookbackYears.length === 0) { result[y] = null; return; }
+      const lookbackRows = RAW.filter(r => lookbackYears.includes(r.year));
+      const handicaps = {};
+      PLAYERS.forEach(p => {
+        handicaps[p] = +(lookbackRows.reduce((s, r) => s + r[p], 0) / lookbackRows.length).toFixed(1);
+      });
+      result[y] = handicaps;
+    });
+    return result;
+  }, []);
+
+  // Net scores and yearly winners
+  const handicapRace = useMemo(() => {
+    return YEARS.filter(y => y >= 2021).map(y => {
+      const rows = RAW.filter(r => r.year === y);
+      const hcaps = handicapData[y];
+      const nRounds = rows.length;
+      const entry = { year: y, rounds: nRounds, handicaps: {}, rawTotals: {}, netTotals: {}, perRound: [] };
+
+      PLAYERS.forEach(p => {
+        entry.handicaps[p] = hcaps[p];
+        entry.rawTotals[p] = rows.reduce((s, r) => s + r[p], 0);
+        entry.netTotals[p] = +(rows.reduce((s, r) => s + (r[p] - hcaps[p]), 0)).toFixed(1);
+      });
+
+      // Per-round breakdown
+      rows.forEach((r, i) => {
+        const round = { label: `${r.day} R${r.round}`, course: r.course, side: r.side };
+        PLAYERS.forEach(p => {
+          round[`${p}_raw`] = r[p];
+          round[`${p}_net`] = +(r[p] - hcaps[p]).toFixed(1);
+        });
+        entry.perRound.push(round);
+      });
+
+      // Determine winner (lowest net total)
+      const sorted = [...PLAYERS].sort((a, b) => entry.netTotals[a] - entry.netTotals[b]);
+      entry.winner = sorted[0];
+      entry.standings = sorted;
+      return entry;
+    });
+  }, [handicapData]);
+
+  // Chart data: cumulative net over rounds within each year
+  const cumulativeNetByYear = useMemo(() => {
+    return YEARS.filter(y => y >= 2021).map(y => {
+      const rows = RAW.filter(r => r.year === y);
+      const hcaps = handicapData[y];
+      let cumulative = {};
+      PLAYERS.forEach(p => { cumulative[p] = 0; });
+      const points = rows.map((r, i) => {
+        const pt = { round: i + 1, label: `${r.day} R${r.round}` };
+        PLAYERS.forEach(p => {
+          cumulative[p] += (r[p] - hcaps[p]);
+          pt[p] = +cumulative[p].toFixed(1);
+        });
+        return pt;
+      });
+      return { year: y, points };
+    });
+  }, [handicapData]);
+
+  // Trophy count
+  const trophyCount = useMemo(() => {
+    const counts = {};
+    PLAYERS.forEach(p => { counts[p] = 0; });
+    handicapRace.forEach(yr => { counts[yr.winner]++; });
+    return counts;
+  }, [handicapRace]);
+
   const tabs = [
     { id: "overview", label: "Overview" },
+    { id: "handicap", label: "Handicap Race" },
     { id: "trends", label: "Trends" },
     { id: "h2h", label: "Head to Head" },
     { id: "patterns", label: "Quirky Patterns" },
@@ -295,6 +371,193 @@ export default function GolfDashboard() {
               <Tooltip content={<CustomTooltip />} />
               {PLAYERS.map(p => <Bar key={p} dataKey={p} fill={COLORS[p]} radius={[4, 4, 0, 0]} />)}
             </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* HANDICAP RACE TAB */}
+      {tab === "handicap" && (
+        <div>
+          <SectionTitle emoji="🎯">How Handicaps Work</SectionTitle>
+          <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 16, marginBottom: 8, fontSize: 13, color: "#8a8a8a", lineHeight: 1.7 }}>
+            Each player's <strong style={{ color: "#e8e8e8" }}>9-hole handicap</strong> is calculated as their average score (over par) from the <strong style={{ color: "#e8e8e8" }}>previous two years</strong>. During the weekend, that handicap is subtracted from each 9-hole score to get a <strong style={{ color: "#e8e8e8" }}>net score</strong>. Lowest total net for the weekend wins. This levels the playing field so everyone competes fairly — in theory.
+          </div>
+
+          <SectionTitle emoji="🏆">The Trophy Case</SectionTitle>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 8 }}>
+            {PLAYERS.map(p => (
+              <div key={p} style={{
+                background: trophyCount[p] > 0 ? `${COLORS[p]}11` : "rgba(255,255,255,0.02)",
+                border: `1px solid ${trophyCount[p] > 0 ? COLORS[p] + "44" : "rgba(255,255,255,0.06)"}`,
+                borderRadius: 14,
+                padding: "20px 16px",
+                textAlign: "center",
+              }}>
+                <div style={{ fontSize: 11, color: COLORS[p], textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 700 }}>{p}</div>
+                <div style={{ fontSize: 42, marginTop: 6 }}>
+                  {trophyCount[p] > 0 ? "🏆".repeat(trophyCount[p]) : <span style={{ opacity: 0.2 }}>—</span>}
+                </div>
+                <div style={{ fontSize: 13, color: "#8a8a8a", marginTop: 4 }}>{trophyCount[p]} win{trophyCount[p] !== 1 ? "s" : ""}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Year-by-year breakdown */}
+          {handicapRace.map(yr => {
+            const chartData = cumulativeNetByYear.find(c => c.year === yr.year)?.points || [];
+            return (
+              <div key={yr.year} style={{ marginTop: 32 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                  <span style={{
+                    fontSize: 28, fontWeight: 900, fontFamily: "'Playfair Display', serif",
+                    color: COLORS[yr.winner],
+                  }}>{yr.year}</span>
+                  <Badge color={COLORS[yr.winner]}>Winner: {yr.winner}</Badge>
+                  <span style={{ fontSize: 12, color: "#5a5a5a" }}>{yr.rounds} rounds</span>
+                </div>
+
+                {/* Handicaps going in */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
+                  {PLAYERS.map(p => (
+                    <div key={p} style={{
+                      background: "rgba(255,255,255,0.03)",
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                      borderTop: `2px solid ${COLORS[p]}`,
+                    }}>
+                      <div style={{ fontSize: 10, color: "#6a6a6a", textTransform: "uppercase", letterSpacing: 1 }}>Handicap</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Playfair Display', serif", color: COLORS[p] }}>
+                        {yr.handicaps[p]}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#5a5a5a", marginTop: 4 }}>
+                        Raw: {yr.rawTotals[p]} · Net: <strong style={{ color: p === yr.winner ? "#4ade80" : "#aaa" }}>{yr.netTotals[p] > 0 ? "+" : ""}{yr.netTotals[p]}</strong>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Final standings */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                  {yr.standings.map((p, i) => (
+                    <div key={p} style={{
+                      flex: 1,
+                      background: i === 0 ? `${COLORS[p]}18` : "rgba(255,255,255,0.02)",
+                      border: `1px solid ${i === 0 ? COLORS[p] + "44" : "rgba(255,255,255,0.06)"}`,
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      textAlign: "center",
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: i === 0 ? "#fbbf24" : "#5a5a5a" }}>
+                        {i === 0 ? "🥇 1st" : i === 1 ? "🥈 2nd" : i === 2 ? "🥉 3rd" : "4th"}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: COLORS[p], marginTop: 2 }}>{p}</div>
+                      <div style={{ fontSize: 11, color: "#6a6a6a" }}>Net {yr.netTotals[p] > 0 ? "+" : ""}{yr.netTotals[p]}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Cumulative net chart */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>{PLAYERS.map(p => <PlayerDot key={p} name={p} />)}</div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                    <XAxis dataKey="label" tick={{ fill: "#6a6a6a", fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
+                    <YAxis tick={{ fill: "#6a6a6a", fontSize: 11 }} label={{ value: "Cumulative Net", angle: -90, position: "insideLeft", fill: "#5a5a5a", fontSize: 10 }} />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload) return null;
+                      return (
+                        <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "10px 14px", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                          <div style={{ fontWeight: 700, color: "#ccc", marginBottom: 6 }}>{label}</div>
+                          {payload.map((p, i) => (
+                            <div key={i} style={{ color: p.color, display: "flex", justifyContent: "space-between", gap: 16 }}>
+                              <span>{p.name}</span>
+                              <span style={{ fontWeight: 700 }}>{p.value > 0 ? "+" : ""}{p.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }} />
+                    {PLAYERS.map(p => <Line key={p} type="monotone" dataKey={p} stroke={COLORS[p]} strokeWidth={2} dot={{ r: 3, fill: COLORS[p] }} />)}
+                  </LineChart>
+                </ResponsiveContainer>
+
+                {/* Round-by-round table */}
+                <div style={{ overflowX: "auto", marginTop: 12 }}>
+                  <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 11 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ padding: "6px 8px", textAlign: "left", color: "#5a5a5a", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>Round</th>
+                        {PLAYERS.map(p => (
+                          <th key={p} style={{ padding: "6px 8px", textAlign: "center", color: COLORS[p], fontWeight: 700, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                            {p}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {yr.perRound.map((r, i) => {
+                        const nets = PLAYERS.map(p => ({ name: p, net: r[`${p}_net`] }));
+                        const minNet = Math.min(...nets.map(n => n.net));
+                        const roundWinners = nets.filter(n => Math.abs(n.net - minNet) < 0.01).map(n => n.name);
+                        return (
+                          <tr key={i}>
+                            <td style={{ padding: "6px 8px", color: "#8a8a8a", borderBottom: "1px solid rgba(255,255,255,0.04)", whiteSpace: "nowrap" }}>
+                              {r.label} <span style={{ color: "#444" }}>· {r.course}</span>
+                            </td>
+                            {PLAYERS.map(p => {
+                              const isWinner = roundWinners.includes(p);
+                              return (
+                                <td key={p} style={{
+                                  padding: "6px 8px",
+                                  textAlign: "center",
+                                  borderBottom: "1px solid rgba(255,255,255,0.04)",
+                                  background: isWinner ? "rgba(74,222,128,0.08)" : "transparent",
+                                }}>
+                                  <span style={{ color: "#8a8a8a" }}>{r[`${p}_raw`]}</span>
+                                  <span style={{ color: "#444", margin: "0 3px" }}>→</span>
+                                  <span style={{
+                                    fontWeight: 700,
+                                    color: r[`${p}_net`] < 0 ? "#4ade80" : r[`${p}_net`] > 2 ? "#f87171" : "#e8e8e8",
+                                  }}>
+                                    {r[`${p}_net`] > 0 ? "+" : ""}{r[`${p}_net`]}
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                      <tr style={{ fontWeight: 700 }}>
+                        <td style={{ padding: "8px 8px", color: "#e8e8e8", borderTop: "2px solid rgba(255,255,255,0.15)" }}>TOTAL</td>
+                        {PLAYERS.map(p => (
+                          <td key={p} style={{
+                            padding: "8px 8px",
+                            textAlign: "center",
+                            borderTop: "2px solid rgba(255,255,255,0.15)",
+                            color: p === yr.winner ? "#4ade80" : "#e8e8e8",
+                            fontSize: 13,
+                          }}>
+                            {yr.netTotals[p] > 0 ? "+" : ""}{yr.netTotals[p]}
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+
+          <SectionTitle emoji="📊">Handicap History</SectionTitle>
+          <p style={{ fontSize: 13, color: "#8a8a8a", margin: "0 0 16px" }}>Each player's 9-hole handicap going into each year. Lower handicap = better player = bigger challenge to win on net.</p>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={YEARS.filter(y => y >= 2021).map(y => ({ year: y, ...handicapData[y] }))} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis dataKey="year" tick={{ fill: "#6a6a6a", fontSize: 12 }} />
+              <YAxis tick={{ fill: "#6a6a6a", fontSize: 12 }} domain={[7, 17]} label={{ value: "Handicap (per 9)", angle: -90, position: "insideLeft", fill: "#5a5a5a", fontSize: 11 }} />
+              <Tooltip content={<CustomTooltip />} />
+              {PLAYERS.map(p => <Line key={p} type="monotone" dataKey={p} stroke={COLORS[p]} strokeWidth={2.5} dot={{ r: 4, fill: COLORS[p] }} />)}
+            </LineChart>
           </ResponsiveContainer>
         </div>
       )}
